@@ -87,7 +87,7 @@
     display: block;
     grid-column: 1 / span 6;
   }
-  
+
   .product-details__right-column {
     grid-column: 7 / span 5;
     padding-top: var(--spacing-medium);
@@ -114,10 +114,25 @@
   .product-details__quantity {
     grid-column: 1 / span 2;
   }
+
   .pdp-tagline {
     font-size: 1.5rem;
     color: #2d7d2d;
     font-weight: 600;
     margin-top: 0.25rem;
   }
+
+    .product-details__stock {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-top: 0.25rem;
+    }
+
+    .stock-badge--in-stock {
+        color: #2d7d2d;
+    }
+
+    .stock-badge--out-of-stock {
+        color: #c00;
+    }
 }
