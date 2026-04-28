@@ -135,4 +135,15 @@
     .stock-badge--out-of-stock {
         color: #c00;
     }
+
+    .custom-attribute dt {
+        font-weight: 600;
+        margin-top: 0.5rem;
+    }
+
+    .custom-attribute dd {
+        margin-left: 0;
+        color: #444;
+    }
+
 }
