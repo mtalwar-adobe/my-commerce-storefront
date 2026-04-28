@@ -1,129 +1,160 @@
 import { readBlockConfig } from '../../scripts/aem.js';
 import { CS_FETCH_GRAPHQL, getProductLink } from '../../scripts/commerce.js';
 
-async function fetchCategoryProducts(categoryId, maxProducts) {
+/**
+ * @param {{ attribute: string, eq: string }[]} filter
+ * @param {number} pageSize
+ */
+async function fetchCategoryProducts(filter, pageSize) {
   const query = `
-        query GetCategoryProducts($categoryId: String!, $pageSize: Int!) {
-        productSearch(
-            phrase: ""
-            filter: [{ attribute: "categoryIds", eq: $categoryId }]
-            page_size: $pageSize
-        ) {
+    query GetCategoryProducts($filter: [SearchClauseInput!]!, $pageSize: Int!) {
+      productSearch(phrase: "", filter: $filter, page_size: $pageSize) {
         items {
-            productView {
+          productView {
+            __typename
             name
             sku
             urlKey
             images(roles: ["image"]) {
-            url
-            label
-        }
-        price {
-          final { amount { value currency } }
-          regular { amount { value currency } }
-             }
+              url
+              label
+            }
+            ... on SimpleProductView {
+              price {
+                final {
+                  amount {
+                    value
+                    currency
+                  }
+                }
+              }
+            }
+            ... on ComplexProductView {
+              priceRange {
+                minimum {
+                  final {
+                    amount {
+                      value
+                      currency
+                    }
+                  }
+                }
+              }
             }
           }
-          }
         }
-        `;
-  const { data } = await CS_FETCH_GRAPHQL.fetchGraphQl(query, {
-    variables: {
-      categoryId,
-      pageSize: maxProducts,
-    },
+      }
+    }
+  `;
+
+  const { data, errors } = await CS_FETCH_GRAPHQL.fetchGraphQl(query, {
+    method: 'GET',
+    variables: { filter, pageSize },
   });
+
+  if (errors?.length) {
+    const message = errors.map((e) => e.message).join('; ');
+    throw new Error(message || 'GraphQL error');
+  }
+
   return data?.productSearch?.items || [];
 }
 
-function resolveImageUrl(imageUrl) {
-  if (!imageUrl) return '';
-  return imageUrl.startsWith('http') ? imageUrl : `/${imageUrl.replace(/^\/+/, '')}`;
+function extractDisplayPrice(productView) {
+  if (!productView) return null;
+  const simple = productView.price?.final?.amount;
+  if (simple?.value != null) return simple;
+  const range = productView.priceRange?.minimum?.final?.amount;
+  if (range?.value != null) return range;
+  return null;
 }
 
-function formatPrice(price) {
-  if (!price?.currency || typeof price?.value !== 'number') return '';
-  return `${price.currency} ${price.value.toFixed(2)}`;
-}
-
-function renderProducts(productsContainer, items) {
-  const cards = document.createDocumentFragment();
-
-  items.forEach((item) => {
-    const product = item?.productView;
-    if (!product) return;
-
-    const image = product.images?.[0];
-    const price = product.price?.final?.amount;
-    const productUrl = getProductLink(product.urlKey, product.sku);
-
-    const productAnchor = document.createElement('a');
-    productAnchor.className = 'promo-banner__product';
-    productAnchor.href = productUrl;
-
-    if (image?.url) {
-      const productImage = document.createElement('img');
-      productImage.src = resolveImageUrl(image.url);
-      productImage.alt = image.label || product.name || '';
-      productImage.loading = 'lazy';
-      productImage.width = 300;
-      productImage.height = 300;
-      productAnchor.append(productImage);
-    }
-
-    const nameEl = document.createElement('span');
-    nameEl.className = 'promo-banner__product-name';
-    nameEl.textContent = product.name || product.sku || 'Product';
-    productAnchor.append(nameEl);
-
-    const formattedPrice = formatPrice(price);
-    if (formattedPrice) {
-      const priceEl = document.createElement('span');
-      priceEl.className = 'promo-banner__product-price';
-      priceEl.textContent = formattedPrice;
-      productAnchor.append(priceEl);
-    }
-
-    cards.append(productAnchor);
-  });
-
-  productsContainer.replaceChildren(cards);
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 export default async function decorate(block) {
-  const {
-    'category-id': categoryId = '',
-    heading = 'Featured Products',
-    'max-products': maxProductsStr = '4',
-  } = readBlockConfig(block);
+  const config = readBlockConfig(block);
+  const categoryId = config['category-id'] ?? '';
+  const categoryPath = config['url-path'] ?? config.urlpath ?? '';
+  const heading = config.heading ?? 'Featured Products';
+  const maxProductsStr = config['max-products'] ?? config.maxproducts ?? '4';
 
-  const parsedMaxProducts = parseInt(maxProductsStr, 10);
-  const maxProducts = Number.isNaN(parsedMaxProducts) ? 4 : parsedMaxProducts;
+  const maxProducts = parseInt(maxProductsStr, 10) || 4;
 
   block.innerHTML = `
-    <div class="promo-banner__heading"><h2>${heading}</h2></div>
-    <div class="promo-banner__products"><p>Loading products...</p></div>
+    <div class="promo-banner__heading">
+      <h2>${escapeHtml(heading)}</h2>
+    </div>
+    <div class="promo-banner__products">
+      <p class="promo-banner__status">Loading products...</p>
+    </div>
   `;
 
   const productsContainer = block.querySelector('.promo-banner__products');
+  if (!productsContainer) return;
 
-  if (!categoryId) {
-    productsContainer.innerHTML = '<p>No products found.</p>';
+  const filter = categoryPath
+    ? [{ attribute: 'categoryPath', eq: categoryPath }]
+    : (categoryId ? [{ attribute: 'categoryIds', eq: String(categoryId) }] : null);
+
+  if (!filter) {
+    productsContainer.innerHTML = '<p class="promo-banner__status">Add a <strong>Category ID</strong> or <strong>URL Path</strong> in the block configuration.</p>';
     return;
   }
 
   try {
-    const products = await fetchCategoryProducts(categoryId, maxProducts);
+    const items = await fetchCategoryProducts(filter, maxProducts);
 
-    if (!products.length) {
-      productsContainer.innerHTML = '<p>No products found.</p>';
+    if (items.length === 0) {
+      productsContainer.innerHTML = '<p class="promo-banner__status">No products found.</p>';
       return;
     }
 
-    renderProducts(productsContainer, products);
+    productsContainer.replaceChildren();
+
+    items.forEach((item) => {
+      const product = item.productView;
+      if (!product?.sku) return;
+
+      const link = document.createElement('a');
+      link.className = 'promo-banner__product';
+      link.href = getProductLink(product.urlKey, product.sku);
+
+      const image = product.images?.[0];
+      if (image?.url) {
+        const img = document.createElement('img');
+        img.src = image.url.startsWith('//') ? `https:${image.url}` : image.url;
+        img.alt = image.label || product.name || '';
+        img.loading = 'lazy';
+        img.width = 300;
+        img.height = 300;
+        link.appendChild(img);
+      }
+
+      const name = document.createElement('span');
+      name.className = 'promo-banner__product-name';
+      name.textContent = product.name || '';
+      link.appendChild(name);
+
+      const price = extractDisplayPrice(product);
+      if (price?.value != null) {
+        const priceEl = document.createElement('span');
+        priceEl.className = 'promo-banner__product-price';
+        const currency = price.currency || '';
+        priceEl.textContent = `${currency} ${Number(price.value).toFixed(2)}`.trim();
+        link.appendChild(priceEl);
+      }
+
+      productsContainer.appendChild(link);
+    });
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error('Promo banner: failed to fetch products', error);
-    productsContainer.innerHTML = '<p>Unable to load products.</p>';
+    productsContainer.innerHTML = '<p class="promo-banner__status">Unable to load products.</p>';
   }
 }
